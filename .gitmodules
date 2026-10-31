@@ -1,0 +1,6 @@
+[submodule "third_party/ZEN"]
+	path = third_party/ZEN
+	url = https://github.com/CyFI-Lab-Public/ZEN.git
+[submodule "third_party/NoiFi"]
+	path = third_party/NoiFi
+	url = https://github.com/shahriar0651/NoiFi.git

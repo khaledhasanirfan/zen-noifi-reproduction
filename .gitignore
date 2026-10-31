@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+
+# Python
+.venv*/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Large binary files — do NOT commit
+data/
+logs/
+*.lime
+*.pt
+*.pth
+*.pkl
+*.npy
+*.npz
+*.h5
+*.onnx
+
+# NoiFi artifacts
+third_party/NoiFi/artifacts/
+third_party/NoiFi/results/
+third_party/NoiFi/outputs/
+
+# ZEN artifacts
+third_party/ZEN/Models/*/output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Results (large outputs — keep small CSVs/plots only)
+results/*/models/
+results/*/scaler/
