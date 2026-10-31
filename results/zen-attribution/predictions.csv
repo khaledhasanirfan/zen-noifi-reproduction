@@ -1,0 +1,14 @@
+query,expected_base,predicted_base,correct,top1_score,top2_base,top2_score,margin,mr_only_prediction,mr_only_correct,pr_only_prediction,pr_only_correct
+yolov5-involution,yolov5,yolov5,True,0.9366216332729471,yolov7,0.3021626794258373,0.6344589538471098,yolov5,True,yolov5,True
+yolov5-KD,yolov5,yolov5,True,0.9716546920821114,yolov8,0.2793127285235828,0.6923419635585286,yolov5,True,yolov5,True
+yolov7-CA,yolov7,yolov7,True,0.8951269312006156,yolov5,0.40357260412888885,0.49155432707172675,yolov7,True,yolov7,True
+yolov7-GAM,yolov7,yolov7,True,0.879776397093314,yolov5,0.37014066453146444,0.5096357325618496,yolov7,True,yolov7,True
+resnet-se,resnet,resnet,True,0.49364472117339653,mobilenetv2,0.1917493244531384,0.3018953967202581,resnet,True,resnet,True
+resnet-ghost,resnet,resnet,True,0.5320794310292594,mobilenetv2,0.2009384473484284,0.331140983680831,resnet,True,resnet,True
+mobilenetv2-former,mobilenetv2,mobilenetv2,True,0.23707010582010582,yolov8,0.1873015873015873,0.04976851851851852,mobilenetv2,True,mobilenetv2,True
+mobilenetv2-ghost,mobilenetv2,mobilenetv2,True,0.6506632487751338,resnet,0.128897809063013,0.5217654397121207,mobilenetv2,True,mobilenetv2,True
+nanoGPT-LORA,nanoGPT,nanoGPT,True,0.6814923805933651,mobilenetv2,0.2382413166049193,0.4432510639884458,resnet,False,nanoGPT,True
+nanoGPTRWKV,nanoGPT,nanoGPT,True,0.7776226691501555,resnet,0.22802909157720136,0.5495935775729541,nanoGPT,True,nanoGPT,True
+llama2-pt,llama2,llama2,True,0.7322500000000001,yolov5,0.1406368994779361,0.591613100522064,llama2,True,llama2,True
+yolov8-Gold,yolov8,yolov8,True,0.8015669065259826,yolov5,0.19780185717283966,0.603765049353143,yolov8,True,yolov8,True
+yolov8-spd,yolov8,yolov8,True,0.617170745920746,yolov5,0.2633418448023904,0.3538289011183555,yolov5,False,yolov8,True

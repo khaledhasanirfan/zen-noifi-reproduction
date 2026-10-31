@@ -1,0 +1,14 @@
+query,layers,tensors,weights
+yolov5-involution,34,230,9335494
+yolov5-KD,25,177,7235389
+yolov7-CA,66,263,33807814
+yolov7-GAM,66,321,31207198
+resnet-se,11,189,5715074
+resnet-ghost,11,127,5616546
+mobilenetv2-former,9,18,1263526
+mobilenetv2-ghost,26,281,4675384
+nanoGPT-LORA,12,101,134688768
+nanoGPTRWKV,6,76,10774656
+llama2-pt,32,291,6738415616
+yolov8-Gold,29,367,24222704
+yolov8-spd,29,184,3541200

@@ -1,0 +1,18 @@
+{
+  "shape": [
+    64,
+    8
+  ],
+  "num_elements": 512,
+  "max_absolute_error": 0.0,
+  "mean_absolute_error": 0.0,
+  "median_absolute_error": 0.0,
+  "std_absolute_error": 0.0,
+  "percentile_95": 0.0,
+  "percentile_99": 0.0,
+  "atol": 1e-05,
+  "rtol": 0.0001,
+  "allclose": true,
+  "reference_finite": true,
+  "recovered_finite": true
+}

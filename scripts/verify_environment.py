@@ -1,108 +1,26 @@
-#!/usr/bin/env python3
-"""
-Environment Verification Script
-================================
-Checks that all required dependencies are installed and working.
-Run this after setting up the virtual environment.
-
-Usage:
-    python scripts/verify_environment.py
-"""
-
-import sys
+"""Verify the compact local experiment environment."""
+import importlib
 import platform
-
-
-def check_import(module_name, display_name=None):
-    """Try importing a module and report status."""
-    display = display_name or module_name
-    try:
-        mod = __import__(module_name)
-        version = getattr(mod, "__version__", "unknown")
-        print(f"  ✅ {display:30s} {version}")
-        return True
-    except ImportError as e:
-        print(f"  ❌ {display:30s} MISSING — {e}")
-        return False
+import subprocess
+import sys
 
 
 def main():
-    print("=" * 60)
-    print(" Environment Verification")
-    print("=" * 60)
-    print()
-
-    # System info
-    print("📋 System Information:")
-    print(f"  Platform:    {platform.platform()}")
-    print(f"  Machine:     {platform.machine()}")
-    print(f"  Python:      {sys.version}")
-    print(f"  Executable:  {sys.executable}")
-    print()
-
-    # Core ML
-    print("📦 Core ML Packages:")
-    results = []
-    results.append(check_import("torch", "PyTorch"))
-    results.append(check_import("torchvision", "TorchVision"))
-    results.append(check_import("torchaudio", "TorchAudio"))
-    print()
-
-    # PyTorch details
-    try:
-        import torch
-        print("🔧 PyTorch Details:")
-        print(f"  CUDA available:  {torch.cuda.is_available()}")
-        print(f"  MPS available:   {torch.backends.mps.is_available()}")
-        print(f"  CPU threads:     {torch.get_num_threads()}")
-        print()
-    except ImportError:
-        pass
-
-    # NoiFi dependencies
-    print("📦 NoiFi Dependencies:")
-    results.append(check_import("hydra", "Hydra"))
-    results.append(check_import("omegaconf", "OmegaConf"))
-    results.append(check_import("pyod", "PyOD"))
-    results.append(check_import("torchattacks", "TorchAttacks"))
-    results.append(check_import("sklearn", "scikit-learn"))
-    results.append(check_import("scipy", "SciPy"))
-    results.append(check_import("numpy", "NumPy"))
-    results.append(check_import("pandas", "Pandas"))
-    results.append(check_import("matplotlib", "Matplotlib"))
-    results.append(check_import("seaborn", "Seaborn"))
-    results.append(check_import("cv2", "OpenCV"))
-    results.append(check_import("h5py", "h5py"))
-    results.append(check_import("tqdm", "tqdm"))
-    results.append(check_import("art", "ART (Adversarial Robustness)"))
-    print()
-
-    # Summary
-    passed = sum(results)
-    total = len(results)
-    print("=" * 60)
-    if passed == total:
-        print(f" 🎉 All {total} packages verified!")
-    else:
-        print(f" ⚠️  {passed}/{total} packages OK, {total - passed} missing")
-    print("=" * 60)
-
-    # pip check
-    print()
-    print("Running pip check...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "check"],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        print("  ✅ No broken dependencies")
-    else:
-        print(f"  ⚠️  Dependency issues found:")
-        print(f"  {result.stdout}")
-
-    return 0 if passed == total else 1
+    print(f'Python {platform.python_version()} / {platform.machine()}')
+    ok = sys.version_info[:2] == (3, 10)
+    for name in ['torch', 'numpy', 'scipy', 'sklearn', 'matplotlib', 'reportlab', 'fuzzywuzzy', 'Levenshtein', 'pypdf']:
+        try:
+            module = importlib.import_module(name)
+            print(f'{name}: {getattr(module, "__version__", "available")}')
+        except ImportError as exc:
+            print(f'{name}: {exc}'); ok = False
+    import torch
+    x = torch.randn(2, 4, requires_grad=True)
+    x.square().mean().backward()
+    ok = ok and x.grad is not None
+    check = subprocess.run([sys.executable, '-m', 'pip', 'check'], check=False)
+    return 0 if ok and check.returncode == 0 else 1
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    raise SystemExit(main())

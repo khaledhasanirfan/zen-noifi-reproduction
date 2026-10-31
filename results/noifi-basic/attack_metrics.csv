@@ -1,0 +1,3 @@
+attack,clean_accuracy,adversarial_accuracy,attack_success_rate_on_clean_correct,clean_correct_count,test_count,uniform_noise_control_accuracy,max_linf
+FGSM,0.9144144058227539,0.036036036908626556,0.9605911374092102,203,222,0.9054054021835327,0.10000002384185791
+PGD,0.9144144058227539,0.0,1.0,203,222,0.9054054021835327,0.10000002384185791

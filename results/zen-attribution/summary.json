@@ -1,0 +1,25 @@
+{
+  "status": "completed",
+  "scope": "Attribution from supplied recovered artifacts",
+  "queries": 13,
+  "base_candidates": [
+    "yolov5",
+    "yolov7",
+    "resnet",
+    "mobilenetv2",
+    "nanoGPT",
+    "llama2",
+    "yolov8"
+  ],
+  "correct": 13,
+  "mr_only_correct": 11,
+  "pr_only_correct": 13,
+  "accuracy": 1.0,
+  "algorithm_sha256": "bf6af4c63d0f2c9abfae730c2573dba93395341203db1b74c3864adef01b200c",
+  "limitations": [
+    "Authors supplied these recovered artifacts; no fresh memory recovery performed.",
+    "Top-two margin is an ambiguity indicator, not a calibrated confidence probability.",
+    "Upstream artifacts contain missing bytecode/decompilation files; original missing-file fallbacks retained. See artifact_coverage.csv.",
+    "Full supplied-dump recovery and YOLO patch inference require separate compatible setup."
+  ]
+}

@@ -39,10 +39,16 @@ def main():
         help="Optional path to save results as JSON"
     )
     args = parser.parse_args()
+    if args.atol < 0 or args.rtol < 0 or not np.isfinite([args.atol, args.rtol]).all():
+        parser.error('Tolerances must be finite and nonnegative')
 
     # Load arrays
     reference = np.load(args.reference, allow_pickle=False)
     recovered = np.load(args.recovered, allow_pickle=False)
+    if (not np.issubdtype(reference.dtype, np.number) or
+            not np.issubdtype(recovered.dtype, np.number) or
+            np.iscomplexobj(reference) or np.iscomplexobj(recovered)):
+        raise SystemExit('Expected real numeric arrays')
 
     # Shape check
     if reference.shape != recovered.shape:
@@ -67,6 +73,7 @@ def main():
             f"reference finite: {ref_finite}, recovered finite: {rec_finite}",
             file=sys.stderr,
         )
+        sys.exit(1)
 
     # Compute metrics
     difference = np.abs(
@@ -96,6 +103,8 @@ def main():
     print(output)
 
     if args.output_json:
+        from pathlib import Path
+        Path(args.output_json).parent.mkdir(parents=True, exist_ok=True)
         with open(args.output_json, "w") as f:
             f.write(output + "\n")
         print(f"\nResults saved to {args.output_json}")

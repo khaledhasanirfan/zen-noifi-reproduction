@@ -1,551 +1,266 @@
-#!/usr/bin/env python3
-"""
-Generate PDF Experiment Reports
-================================
-Produces professional PDF reports for ZEN and NoiFi experiments.
-Uses only Python standard library + minimal dependencies.
-
-Usage:
-    python scripts/generate_report.py [--output reports/experiment_report.pdf]
-"""
-
+"""Generate measured charts, a concise PDF, and slide talking points with Python."""
+import csv
 import json
-import os
-import sys
-from datetime import datetime
+from collections import defaultdict
 from pathlib import Path
+from statistics import mean, pstdev
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+from pypdf import PdfReader, PdfWriter
+from reportlab import rl_config
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from common import ROOT, save_csv
 
-# We'll generate HTML first, then convert — or use a pure-Python approach
-# This script generates a standalone HTML report that can be printed to PDF
-
-
-def get_project_root():
-    return Path(__file__).resolve().parent.parent
-
-
-def read_file_safe(path):
-    """Read a file, returning empty string if not found."""
-    try:
-        return Path(path).read_text()
-    except (FileNotFoundError, PermissionError):
-        return ""
-
-
-def collect_noifi_results(root):
-    """Collect NoiFi experiment results."""
-    results = {}
-
-    # Check smoke test
-    smoke_dir = root / "results" / "noifi-smoke"
-    results["smoke_test"] = {
-        "completed": smoke_dir.exists() and any(smoke_dir.rglob("*.log")),
-        "log_files": [str(f) for f in (root / "logs" / "noifi-smoke").glob("*.log")]
-        if (root / "logs" / "noifi-smoke").exists()
-        else [],
-    }
-
-    # Check baseline
-    baseline_dir = root / "results" / "noifi-baseline"
-    results["baseline"] = {
-        "completed": baseline_dir.exists(),
-        "has_models": (baseline_dir / "models").exists()
-        if baseline_dir.exists()
-        else False,
-        "has_outputs": (baseline_dir / "outputs").exists()
-        if baseline_dir.exists()
-        else False,
-    }
-
-    # Check N-study
-    n_study_dir = root / "results" / "noifi-n-study"
-    results["n_study"] = {
-        "completed": n_study_dir.exists(),
-        "n_values_tested": [],
-        "latency_data": "",
-    }
-    if n_study_dir.exists():
-        for d in sorted(n_study_dir.iterdir()):
-            if d.is_dir() and d.name.startswith("N_"):
-                results["n_study"]["n_values_tested"].append(d.name)
-        latency_file = n_study_dir / "latency_results.csv"
-        if latency_file.exists():
-            results["n_study"]["latency_data"] = latency_file.read_text()
-
-    return results
+rl_config.invariant = 1
+OUT = ROOT/'output'
+FIG = OUT/'figures'
+PDF = OUT/'pdf/experiment_report.pdf'
+NAVY, TEAL, ORANGE = '#18364B', '#168B89', '#DA7B3F'
 
 
-def collect_zen_results(root):
-    """Collect ZEN experiment results."""
-    results = {}
-
-    # Check recovery
-    zen_dir = root / "results" / "zen"
-    results["recovery"] = {
-        "completed": (root / "logs" / "zen" / "recovery.log").exists(),
-        "artifacts_found": [],
-        "dump_hash": read_file_safe(root / "reports" / "zen-memory-dump.sha256"),
-    }
-
-    artifacts_file = zen_dir / "recovered-artifacts.txt"
-    if artifacts_file.exists():
-        results["recovery"]["artifacts_found"] = [
-            line.strip()
-            for line in artifacts_file.read_text().splitlines()
-            if line.strip()
-        ]
-
-    # Check inference
-    results["inference"] = {
-        "without_patch_log": read_file_safe(
-            root / "logs" / "zen" / "inference-without-patch.log"
-        ),
-        "with_patch_log": read_file_safe(
-            root / "logs" / "zen" / "inference-with-patch.log"
-        ),
-    }
-
-    return results
+def read_json(path):
+    value = json.loads(path.read_text())
+    if value.get('status') != 'completed':
+        raise ValueError(f'Experiment not completed: {path}')
+    return value
 
 
-def generate_html_report(root):
-    """Generate a comprehensive HTML report."""
-    noifi = collect_noifi_results(root)
-    zen = collect_zen_results(root)
-    upstream = read_file_safe(root / "reports" / "upstream-commits.txt")
+def read_csv(path):
+    with path.open() as stream:
+        rows = list(csv.DictReader(stream))
+    if not rows:
+        raise ValueError(f'Empty experiment result: {path}')
+    return rows
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Status helper
-    def status_icon(completed):
-        return "✅ Completed" if completed else "⬜ Pending"
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>ZEN & NoiFi — Experiment Report</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
-
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-
-  body {{
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    line-height: 1.6;
-    color: #1a1a2e;
-    background: #f8f9fa;
-    padding: 40px;
-    max-width: 900px;
-    margin: 0 auto;
-  }}
-
-  @media print {{
-    body {{ padding: 20px; background: white; }}
-    .page-break {{ page-break-before: always; }}
-    .no-print {{ display: none; }}
-  }}
-
-  h1 {{
-    font-size: 28px;
-    font-weight: 700;
-    color: #16213e;
-    border-bottom: 3px solid #0f3460;
-    padding-bottom: 12px;
-    margin-bottom: 24px;
-  }}
-
-  h2 {{
-    font-size: 22px;
-    font-weight: 600;
-    color: #0f3460;
-    margin-top: 32px;
-    margin-bottom: 16px;
-    padding-left: 12px;
-    border-left: 4px solid #e94560;
-  }}
-
-  h3 {{
-    font-size: 16px;
-    font-weight: 600;
-    color: #533483;
-    margin-top: 20px;
-    margin-bottom: 8px;
-  }}
-
-  .meta {{
-    background: linear-gradient(135deg, #16213e, #0f3460);
-    color: white;
-    padding: 20px;
-    border-radius: 8px;
-    margin-bottom: 24px;
-  }}
-
-  .meta p {{ color: #ccc; font-size: 14px; }}
-  .meta strong {{ color: white; }}
-
-  table {{
-    width: 100%;
-    border-collapse: collapse;
-    margin: 16px 0;
-    font-size: 14px;
-  }}
-
-  th {{
-    background: #0f3460;
-    color: white;
-    padding: 10px 14px;
-    text-align: left;
-    font-weight: 600;
-  }}
-
-  td {{
-    padding: 8px 14px;
-    border-bottom: 1px solid #e0e0e0;
-  }}
-
-  tr:nth-child(even) {{ background: #f5f5f5; }}
-  tr:hover {{ background: #e8f4f8; }}
-
-  .status-card {{
-    background: white;
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 16px;
-    margin: 12px 0;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-  }}
-
-  .completed {{ border-left: 4px solid #2ecc71; }}
-  .pending {{ border-left: 4px solid #f39c12; }}
-
-  .code {{
-    background: #2d2d2d;
-    color: #f8f8f2;
-    padding: 12px 16px;
-    border-radius: 6px;
-    font-family: 'Fira Code', 'Courier New', monospace;
-    font-size: 12px;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    margin: 8px 0;
-  }}
-
-  .section {{
-    background: white;
-    border-radius: 8px;
-    padding: 24px;
-    margin: 16px 0;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-  }}
-
-  .badge {{
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
-  }}
-
-  .badge-green {{ background: #d4edda; color: #155724; }}
-  .badge-yellow {{ background: #fff3cd; color: #856404; }}
-  .badge-blue {{ background: #cce5ff; color: #004085; }}
-
-  footer {{
-    margin-top: 40px;
-    padding-top: 16px;
-    border-top: 1px solid #ddd;
-    font-size: 12px;
-    color: #888;
-    text-align: center;
-  }}
-</style>
-</head>
-<body>
-
-<div class="meta">
-  <h1 style="color:white; border-bottom-color: #e94560;">
-    ZEN & NoiFi — Reproduction & Extension Report
-  </h1>
-  <p><strong>Author:</strong> Khaled Hasan Irfan</p>
-  <p><strong>Generated:</strong> {now}</p>
-  <p><strong>Repository:</strong> https://github.com/khaledhasanirfan/zen-noifi-reproduction</p>
-  <p><strong>Hardware:</strong> MacBook Air M5, 16GB RAM, macOS 26.6.2</p>
-</div>
-
-<div class="section">
-  <h2>1. Project Overview</h2>
-  <p>This report documents the reproduction and extension of two security/ML research papers:</p>
-
-  <table>
-    <tr><th>Paper</th><th>Domain</th><th>Core Contribution</th></tr>
-    <tr>
-      <td><strong>ZEN</strong> (CyFI Lab, Georgia Tech)</td>
-      <td>Memory Forensics + DNN</td>
-      <td>Recover custom neural-network layers from Linux memory dumps, attribute base models, and patch for inference</td>
-    </tr>
-    <tr>
-      <td><strong>NoiFi</strong> (Shahriar et al.)</td>
-      <td>WiFi Sensing Security</td>
-      <td>Detect adversarial attacks on WiFi CSI classifiers using randomized-smoothing noise-feature analysis</td>
-    </tr>
-  </table>
-</div>
-
-<div class="section">
-  <h2>2. Upstream Attribution</h2>
-  <div class="code">{upstream if upstream else "Pending — run: git submodule status > reports/upstream-commits.txt"}</div>
-</div>
-
-<div class="section">
-  <h2>3. Experiment Status Summary</h2>
-  <table>
-    <tr><th>#</th><th>Experiment</th><th>Status</th><th>Evidence</th></tr>
-    <tr>
-      <td>1</td><td>NoiFi Environment Setup</td>
-      <td>{status_icon(noifi['smoke_test']['completed'])}</td>
-      <td>{'Logs available' if noifi['smoke_test']['log_files'] else 'N/A'}</td>
-    </tr>
-    <tr>
-      <td>2</td><td>NoiFi Smoke Pipeline (2 epochs)</td>
-      <td>{status_icon(noifi['smoke_test']['completed'])}</td>
-      <td>{len(noifi['smoke_test']['log_files'])} log files</td>
-    </tr>
-    <tr>
-      <td>3</td><td>NoiFi Baseline Reproduction</td>
-      <td>{status_icon(noifi['baseline']['completed'])}</td>
-      <td>{'Models + outputs' if noifi['baseline'].get('has_models') else 'N/A'}</td>
-    </tr>
-    <tr>
-      <td>4</td><td>NoiFi N-vs-Stability Extension</td>
-      <td>{status_icon(noifi['n_study']['completed'])}</td>
-      <td>{', '.join(noifi['n_study']['n_values_tested']) or 'N/A'}</td>
-    </tr>
-    <tr>
-      <td>5</td><td>ZEN Environment Setup (Linux)</td>
-      <td>{status_icon(bool(zen['recovery']['dump_hash']))}</td>
-      <td>{'Hash recorded' if zen['recovery']['dump_hash'] else 'N/A'}</td>
-    </tr>
-    <tr>
-      <td>6</td><td>ZEN Supplied-Dump Recovery</td>
-      <td>{status_icon(zen['recovery']['completed'])}</td>
-      <td>{len(zen['recovery']['artifacts_found'])} artifacts</td>
-    </tr>
-    <tr>
-      <td>7</td><td>ZEN Patched Inference</td>
-      <td>{status_icon(bool(zen['inference']['with_patch_log']))}</td>
-      <td>{'Logs available' if zen['inference']['with_patch_log'] else 'N/A'}</td>
-    </tr>
-    <tr>
-      <td>8</td><td>ZEN Output Consistency</td>
-      <td>⬜ Pending</td>
-      <td>N/A</td>
-    </tr>
-  </table>
-</div>
-
-<div class="page-break"></div>
-
-<div class="section">
-  <h2>4. NoiFi — Detailed Results</h2>
-
-  <h3>4.1 Environment</h3>
-  <table>
-    <tr><th>Component</th><th>Value</th></tr>
-    <tr><td>Device</td><td>CPU (Apple M5 — no CUDA)</td></tr>
-    <tr><td>Python</td><td>3.9.6</td></tr>
-    <tr><td>PyTorch</td><td>2.0.1</td></tr>
-    <tr><td>Dataset</td><td>RoboFiSense</td></tr>
-  </table>
-
-  <h3>4.2 Pipeline Steps</h3>
-  <table>
-    <tr><th>Step</th><th>Script</th><th>Purpose</th></tr>
-    <tr><td>0a</td><td>step_0_train_classifiers.py</td><td>Train WiFi CSI classifiers</td></tr>
-    <tr><td>0b</td><td>step_0_train_autoencoders.py</td><td>Train denoising autoencoders (DAE)</td></tr>
-    <tr><td>1</td><td>step_1_generate_adversarial_examples_simple.py</td><td>Generate adversarial attacks</td></tr>
-    <tr><td>2</td><td>step_2_reconstruct_and_extract_noise.py</td><td>DAE reconstruction + noise extraction</td></tr>
-    <tr><td>3</td><td>step_3_analyze_noise_features.py</td><td>Analyze residual noise features</td></tr>
-    <tr><td>4</td><td>step_4_detect_adversarial_examples_simple.py</td><td>Detect adversarial examples</td></tr>
-  </table>
-
-  <h3>4.3 Extension: Randomization Count (N) vs Detection Stability</h3>
-  <p>
-    This extension examines how the number of randomized references (N) affects
-    detection accuracy and latency — a key design parameter in NoiFi's
-    randomized smoothing approach.
-  </p>
-  <table>
-    <tr><th>N</th><th>AUROC</th><th>Recall@FPR</th><th>Median Latency</th><th>Score Variability</th></tr>
-    <tr><td>1</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-    <tr><td>3</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-    <tr><td>5</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-    <tr><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-    <tr><td>20</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-  </table>
-  <p><em>Table will be populated after baseline experiments complete.</em></p>
-</div>
-
-<div class="page-break"></div>
-
-<div class="section">
-  <h2>5. ZEN — Detailed Results</h2>
-
-  <h3>5.1 Environment Requirements</h3>
-  <table>
-    <tr><th>Component</th><th>Value</th></tr>
-    <tr><td>OS</td><td>Linux x86-64 (required)</td></tr>
-    <tr><td>Python</td><td>3.8.18 (per official demo)</td></tr>
-    <tr><td>Framework</td><td>Volatility3 + custom CMR plugin</td></tr>
-    <tr><td>Model</td><td>YOLOv5 + CBAM-Involution (VisDrone)</td></tr>
-  </table>
-
-  <h3>5.2 Recovery Pipeline</h3>
-  <table>
-    <tr><th>Phase</th><th>Description</th><th>Status</th></tr>
-    <tr><td>Memory Dump</td><td>Load supplied .lime file</td><td>{status_icon(bool(zen['recovery']['dump_hash']))}</td></tr>
-    <tr><td>CMR Recovery</td><td>Extract custom model representations</td><td>{status_icon(zen['recovery']['completed'])}</td></tr>
-    <tr><td>Attribution</td><td>Identify base model architecture</td><td>{status_icon(zen['recovery']['completed'])}</td></tr>
-    <tr><td>Patching</td><td>Generate inference-ready patch</td><td>{status_icon(bool(zen['recovery']['artifacts_found']))}</td></tr>
-    <tr><td>Inference</td><td>Run model with recovered patch</td><td>{status_icon(bool(zen['inference']['with_patch_log']))}</td></tr>
-  </table>
-
-  <h3>5.3 Extension: Output Consistency Checker</h3>
-  <p>
-    Numerically compares original model outputs against ZEN-recovered outputs
-    using configurable absolute and relative tolerance thresholds.
-  </p>
-  <div class="code">python scripts/compare_outputs.py reference.npy recovered.npy --atol 1e-5 --rtol 1e-4</div>
-</div>
-
-<div class="section">
-  <h2>6. Reproduction Notes & Limitations</h2>
-  <ul style="padding-left: 24px;">
-    <li>NoiFi runs on CPU only (no CUDA on macOS) — training is slower but numerically equivalent</li>
-    <li>ZEN requires Linux x86-64 with matching kernel symbols for full forensic pipeline</li>
-    <li>All reported results are from our own runs, not copied from the papers</li>
-    <li>Threshold tuning data and final evaluation data are kept separate</li>
-    <li>Small epoch counts in smoke tests verify pipeline connectivity, not research claims</li>
-  </ul>
-</div>
-
-<div class="section">
-  <h2>7. Repository Structure</h2>
-  <div class="code">zen-noifi-reproduction/
-├── README.md
-├── .gitignore
-├── .gitmodules
-├── third_party/
-│   ├── ZEN/          (git submodule → CyFI-Lab-Public/ZEN)
-│   └── NoiFi/        (git submodule → shahriar0651/NoiFi)
-├── scripts/
-│   ├── run_noifi_smoke.sh
-│   ├── run_noifi_baseline.sh
-│   ├── run_noifi_n_study.sh
-│   ├── run_zen_demo.sh
-│   ├── run_zen_inference.sh
-│   ├── compare_outputs.py
-│   └── generate_report.py
-├── environments/
-│   └── noifi-mac-initial.txt
-├── reports/
-│   ├── upstream-commits.txt
-│   └── experiment_report.html
-├── results/     (experiment outputs)
-├── logs/        (execution logs)
-└── data/        (datasets — gitignored)</div>
-</div>
-
-<footer>
-  <p>Generated by generate_report.py — {now}</p>
-  <p>GitHub: <a href="https://github.com/khaledhasanirfan/zen-noifi-reproduction">
-    khaledhasanirfan/zen-noifi-reproduction</a></p>
-</footer>
-
-</body>
-</html>"""
-
-    return html
+def save_figure(name):
+    plt.savefig(FIG/f'{name}.png', dpi=220, bbox_inches='tight', facecolor='white')
+    plt.savefig(FIG/f'{name}.svg', bbox_inches='tight', metadata={'Date': None})
+    svg = FIG/f'{name}.svg'
+    svg.write_text('\n'.join(line.rstrip() for line in svg.read_text().splitlines())+'\n')
+    plt.close()
 
 
 def main():
-    root = get_project_root()
+    nroot = ROOT/'results/noifi-basic'; zroot = ROOT/'results/zen-attribution'
+    noifi = read_json(nroot/'summary.json')
+    zen = read_json(zroot/'summary.json')
+    patch = read_json(ROOT/'results/zen-patch-demo/summary.json')
+    rows = read_csv(nroot/'detection_metrics.csv')
+    attacks = read_csv(nroot/'attack_metrics.csv')
+    predictions = read_csv(zroot/'predictions.csv')
+    coverage = read_csv(zroot/'artifact_coverage.csv')
+    stability = read_csv(nroot/'stability.csv')
+    FIG.mkdir(parents=True, exist_ok=True); PDF.parent.mkdir(parents=True, exist_ok=True)
+    plt.rcParams.update({'font.family': 'DejaVu Sans', 'font.size': 10,
+                         'axes.spines.top': False, 'axes.spines.right': False,
+                         'axes.labelcolor': NAVY, 'text.color': NAVY,
+                         'axes.titleweight': 'bold', 'figure.dpi': 140})
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[(row['attack'], row['detector'], int(row['n']))].append(row)
+    summary = []
+    for (attack, detector, n), group in grouped.items():
+        summary.append({'attack': attack, 'detector': detector, 'n': n,
+                        'auroc_mean': mean(float(r['auroc']) for r in group),
+                        'auroc_std': pstdev(float(r['auroc']) for r in group),
+                        'recall_mean': mean(float(r['recall_at_calibrated_threshold']) for r in group),
+                        'test_fpr_mean': mean(float(r['observed_test_fpr']) for r in group),
+                        'ms_per_sample_mean': mean(float(r['ms_per_sample']) for r in group)})
+    timing_low = mean(r['ms_per_sample_mean'] for r in summary if r['detector']=='NoiFi MED' and r['n']==1)
+    timing_high = mean(r['ms_per_sample_mean'] for r in summary if r['detector']=='NoiFi MED' and r['n']==20)
+    save_csv(nroot/'comparison.csv', summary)
+    # Paired attack/detector comparison. Accuracy and AUROC are kept separate.
+    fig, ax = plt.subplots(figsize=(7.5, 3.0))
+    names = [r['attack'] for r in attacks]
+    positions = np.arange(len(names))
+    for offset, detector, n, color in [(-0.18, 'Reconstruction MSE', 0, ORANGE),
+                                      (0.18, 'NoiFi MED', 5, TEAL)]:
+        values = [next(r['auroc_mean'] for r in summary if r['attack'] == a and r['detector'] == detector and r['n'] == n) for a in names]
+        bars = ax.bar(positions+offset, values, 0.34, label=detector+(' (N=5)' if n else ''), color=color)
+        ax.bar_label(bars, fmt='%.3f', padding=3, fontsize=9)
+    ax.set(xticks=positions, xticklabels=names, ylim=(0, 1.13), ylabel='Detection AUROC', title='Reduced real-data experiment: detector comparison')
+    ax.axhline(0.5, ls=':', color='#AAB7C0', lw=1)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.13), ncol=2, frameon=False)
+    fig.tight_layout(); save_figure('noifi_comparison')
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.2))
+    for attack_name, color in zip(names, [TEAL, ORANGE]):
+        group = sorted([r for r in summary if r['attack'] == attack_name and r['detector'] == 'NoiFi MED'], key=lambda r: r['n'])
+        ns = [r['n'] for r in group]
+        axes[0].errorbar(ns, [r['auroc_mean'] for r in group], yerr=[r['auroc_std'] for r in group], marker='o', capsize=3, color=color, label=attack_name)
+        axes[1].plot(ns, [r['ms_per_sample_mean'] for r in group], 'o-', color=color, label=attack_name)
+        stab = [mean(float(r['mean_sample_score_std']) for r in stability if r['attack'] == attack_name and int(r['n']) == n) for n in ns]
+        axes[2].plot(ns, stab, 'o-', color=color, label=attack_name)
+    for ax, title, label in zip(axes, ['Detection', 'CPU batch timing', 'Score variability'],
+                              ['AUROC (mean +/- SD)', 'Milliseconds per sample', 'Mean per-sample score SD']):
+        ax.set(title=title, xlabel='Randomization count N', ylabel=label)
+        ax.set_xticks([1, 5, 10, 20]); ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout(); save_figure('noifi_n_study')
+    # CMR attribution heat map, using authors' recovered artifacts.
+    sims = read_csv(zroot/'similarity.csv')
+    bases = zen['base_candidates']; queries = [r['query'] for r in predictions]
+    matrix = np.array([[next(float(r['cmr_similarity']) for r in sims if r['query'] == q and r['base'] == b) for b in bases] for q in queries])
+    fig, ax = plt.subplots(figsize=(8, 4.9))
+    im = ax.imshow(matrix, cmap='Blues', vmin=0, vmax=1, aspect='auto')
+    ax.set(xticks=range(len(bases)), xticklabels=bases, yticks=range(len(queries)), yticklabels=queries,
+           title='ZEN upstream attribution on supplied recovered artifacts')
+    plt.setp(ax.get_xticklabels(), rotation=25, ha='right', fontsize=9)
+    for i in range(len(queries)):
+        for j in range(len(bases)):
+            ax.text(j, i, f'{matrix[i,j]:.2f}', ha='center', va='center', fontsize=8,
+                    color='white' if matrix[i,j] > 0.55 else NAVY)
+    fig.colorbar(im, ax=ax, fraction=0.03, label='CMR similarity')
+    fig.tight_layout(); save_figure('zen_attribution')
+    fig, ax = plt.subplots(figsize=(7.5, 3))
+    ranked = sorted(predictions, key=lambda r: float(r['margin']))
+    ax.barh([r['query'] for r in ranked], [float(r['margin']) for r in ranked], color=TEAL)
+    ax.set(xlabel='Top-one minus top-two CMR similarity', title='Simple ZEN extension: attribution ambiguity')
+    fig.tight_layout(); save_figure('zen_margin')
+    # Learning curves make the limitations of short training inspectable.
+    fig, axes = plt.subplots(1, 2, figsize=(8, 2.8))
+    for ax, name in zip(axes, ['classifier', 'dae']):
+        hist = read_csv(nroot/f'{name}_training.csv')
+        ax.plot([int(r['epoch']) for r in hist], [float(r['train_loss']) for r in hist], label='Train', color=TEAL)
+        ax.plot([int(r['epoch']) for r in hist], [float(r['validation_loss']) for r in hist], label='Validation', color=ORANGE)
+        ax.set(title=name.upper(), xlabel='Epoch', ylabel='Loss'); ax.legend(frameon=False)
+    fig.tight_layout(); save_figure('training_curves')
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='ReportTitle', fontName='Helvetica-Bold', fontSize=23, leading=28, textColor=colors.HexColor(NAVY), spaceAfter=12))
+    styles.add(ParagraphStyle(name='SectionTitle', fontName='Helvetica-Bold', fontSize=16, leading=20, textColor=colors.HexColor(NAVY), spaceAfter=10))
+    styles['BodyText'].fontSize=10; styles['BodyText'].leading=14; styles['BodyText'].spaceAfter=8
+    styles.add(ParagraphStyle(name='SmallNote', fontName='Helvetica', fontSize=8, leading=11, textColor=colors.HexColor('#536776'), spaceAfter=7))
+    story = []
+    def p(text, style='BodyText'):
+        story.append(Paragraph(text, styles[style]))
+    def table(data, widths):
+        formatted = [[Paragraph(str(v), styles['SmallNote']) for v in row] for row in data]
+        t = Table(formatted, colWidths=widths, repeatRows=1, hAlign='LEFT')
+        t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#E5F0F3')),
+                              ('LINEBELOW',(0,0),(-1,0),0.8,colors.HexColor(TEAL)),
+                              ('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),6),
+                              ('BOTTOMPADDING',(0,0),(-1,-1),6),
+                              ('LINEBELOW',(0,1),(-1,-1),0.3,colors.HexColor('#DBE3E7'))]))
+        story.extend([t, Spacer(1, 10)])
+    def picture(name, width):
+        from PIL import Image as PILImage
+        path = FIG/f'{name}.png'
+        with PILImage.open(path) as image:
+            w, h = image.size
+        story.extend([Image(str(path), width=width, height=width*h/w), Spacer(1, 8)])
+    def newpage(title):
+        story.append(PageBreak()); p(title, 'ReportTitle')
+    p('ZEN + NoiFi', 'ReportTitle')
+    p('Basic implementations, small extensions, measured comparisons', 'SectionTitle')
+    p('Khaled Hasan Irfan | MacBook Air M5 | CPU | Python '+noifi['python'])
+    table([['Experiment', 'What was executed', 'Outcome'],
+           ['NoiFi basic', f'{noifi["recordings"]} real CSI recordings; compact CNN/DAE; FGSM + PGD', f'Clean test accuracy: {noifi["clean_accuracy"]:.1%}'],
+           ['NoiFi extension', 'N = 1, 3, 5, 10, 20; three permutation seeds', 'AUROC, recall, test FPR, latency and score SD measured'],
+           ['ZEN attribution', 'Upstream similarity code; supplied recovered artifacts', f'{zen["correct"]}/{zen["queries"]} base families identified'],
+           ['ZEN patch demo', 'Local function bytecode; identical model weights; 64 inputs', f'Output error: {patch["after_max_absolute_error"]:.1f} after patch'],
+           ['Full ZEN recovery', 'Supplied Linux memory dump + official YOLO patch inference', 'Not run: needs separate compatible setup and dump']],[90,255,160])
+    p('Scope of the comparison', 'SectionTitle')
+    p('ZEN attributes and restores model computation. NoiFi detects adversarial CSI inputs. These solve different problems, so their accuracy and AUROC are not ranked against each other. Each is compared with an appropriate baseline or ablation.')
+    p('What changed from the initial project', 'SectionTitle')
+    p('Installed Python 3.10; added a small runnable implementation, real-data download with hash checks, separate calibration/test partitions, fail-fast scripts, evidence CSVs, numerical output checking, and Python-generated plots/PDF. Removed completion claims based only on folders or logs.')
+    p('All reported values come from the CSV/JSON files in results/. No paper headline scores are presented as local results.', 'SmallNote')
+    newpage('NoiFi | basic experiment')
+    split = noifi['config']['split_counts']
+    p(f'Real RoboFiSense CSI, eight classes. One sample per recording. Partitions: {split["train"]} train, {split["validation"]} validation, {split["calibration"]} calibration, {split["test"]} final test. Inputs are normalized as in the upstream loader and resized to 64 x 64.')
+    p('Mechanism: DAE reconstruction -> residual noise -> independent pixel permutations -> classifier penultimate features -> mean Euclidean distance (paper Eq. 8). The baseline uses reconstruction MSE without randomized features.')
+    p(f'Clean test accuracy: {noifi["clean_accuracy"]:.1%}; uniform-noise control accuracy: {noifi["uniform_noise_control_accuracy"]:.1%}. The random control uses the same 0.10 amplitude bound; label preservation is not assumed.', 'SmallNote')
+    picture('noifi_comparison', 500)
+    data = [['Attack', 'ASR*', 'Detector', 'AUROC', 'Recall**', 'Test FPR']]
+    for atk in attacks:
+        for detector, n in [('Reconstruction MSE',0),('NoiFi MED',5)]:
+            r = next(r for r in summary if r['attack']==atk['attack'] and r['detector']==detector and r['n']==n)
+            data.append([atk['attack'],f'{float(atk["attack_success_rate_on_clean_correct"]):.1%}',detector+(' N=5' if n else ''),f'{r["auroc_mean"]:.3f}',f'{r["recall_mean"]:.1%}',f'{r["test_fpr_mean"]:.1%}'])
+    table(data,[45,50,145,65,80,85])
+    p('* ASR is measured only on clean-correct test recordings. Detection includes all test attacks. Both attacks use L-infinity epsilon = 0.10 on normalized inputs; PGD uses 20 steps and random start.', 'SmallNote')
+    p('** Thresholds use a separate benign calibration partition with a 5% FPR target. The observed held-out test FPR is reported, not assumed to equal 5%. NoiFi rows average three permutation seeds; they share one trained model.', 'SmallNote')
+    fg_mse = next(r for r in summary if r['attack']=='FGSM' and r['detector']=='Reconstruction MSE')
+    fg_med = next(r for r in summary if r['attack']=='FGSM' and r['detector']=='NoiFi MED' and r['n']==5)
+    pg_mse = next(r for r in summary if r['attack']=='PGD' and r['detector']=='Reconstruction MSE')
+    pg_med = next(r for r in summary if r['attack']=='PGD' and r['detector']=='NoiFi MED' and r['n']==5)
+    p(f'Observed comparison: FGSM AUROC is {fg_mse["auroc_mean"]:.3f} for MSE and {fg_med["auroc_mean"]:.3f} for MED; PGD is {pg_mse["auroc_mean"]:.3f} and {pg_med["auroc_mean"]:.3f}, respectively. This reduced run does not show a universal improvement from MED. Small models and resized inputs do not establish the full paper results.')
+    newpage('NoiFi | small extension')
+    p('Question: how many randomized references are needed before scores stabilize, and what is the cost? The trained CNN, DAE, recordings and adversarial examples remain fixed. Only N and permutation seed vary.')
+    picture('noifi_n_study', 510)
+    table([['N','Attack','AUROC mean +/- SD','Recall','Test FPR','ms/sample']]+[
+        [r['n'],r['attack'],f'{r["auroc_mean"]:.3f} +/- {r["auroc_std"]:.2g}',f'{r["recall_mean"]:.1%}',f'{r["test_fpr_mean"]:.1%}',f'{r["ms_per_sample_mean"]:.2f}']
+        for r in summary if r['detector']=='NoiFi MED'],[30,50,150,80,80,80])
+    p('Timing includes DAE reconstruction, permutations, feature extraction and scoring. It is CPU wall time per sample amortized over batches of up to 32, not single-request latency. Initialization, model training and attack generation are excluded. These timings are hardware-specific.', 'SmallNote')
+    p('Score SD is first computed across the three permutation seeds for each held-out sample, then averaged across samples and benign/adversarial kinds. It measures randomization stability, not uncertainty across independently trained models.', 'SmallNote')
+    p(f'Observed trade-off: AUROC changes very little across N. Score variability decreases, while per-sample CPU time grows from about {timing_low:.2f} ms at N=1 to {timing_high:.2f} ms at N=20. These measurements support using fewer references for this reduced setup; broader validation is needed.', 'SmallNote')
+    newpage('ZEN | attribution and patching')
+    p(f'Executed the upstream ZEN similarity algorithm on 13 authors-supplied recovered CMR artifacts against seven base candidates. Top-one family identification: {zen["correct"]}/{zen["queries"]}. No new RAM image was recovered in this experiment.')
+    p(f'Ablation comparison: mathematical representation alone (MR): {zen["mr_only_correct"]}/13; programmatic representation alone (PR): {zen["pr_only_correct"]}/13; combined representation (CMR): {zen["correct"]}/13. This is a closed-set attribution check on the supplied artifacts.', 'SmallNote')
+    picture('zen_attribution', 470)
+    missing = sum(int(r['missing_bytecode_files']) for r in coverage)
+    p(f'Artifact coverage: {missing} referenced bytecode files are absent across the 20 inspected models. Upstream missing-file behavior is retained and counts are in artifact_coverage.csv. This limits the interpretation of the similarity scores.', 'SmallNote')
+    p('Controlled patch demonstration', 'SectionTitle')
+    p(f'With the same weights but the base forward function, maximum output error was {patch["before_max_absolute_error"]:.6f}. Restoring our locally captured custom forward bytecode reduced it to {patch["after_max_absolute_error"]:.1f} over 64 inputs. This illustrates code-plus-weights recovery; it is not the official YOLO memory experiment.')
+    newpage('ZEN | extension and next steps')
+    p('Simple extension: rank candidates and record the top-two similarity margin. A small margin flags cases worth inspecting; it is not a calibrated confidence score.')
+    picture('zen_margin', 480)
+    closest = min(predictions, key=lambda r: float(r['margin']))
+    p(f'Smallest observed margin: {closest["query"]}, {float(closest["margin"]):.4f}; predicted family {closest["predicted_base"]}. All 13 supplied queries were still identified correctly in this closed candidate set.')
+    p('What is still required', 'SectionTitle')
+    p('Full ZEN reproduction requires the supplied LiME dump, the matched Linux x86-64 / Python 3.8.18 environment, Volatility recovery, and successful official YOLO inference after patching. None of those steps is marked complete here. The original-vs-recovered output checker is ready for real tensor exports.')
+    p('Sources and download links', 'SectionTitle')
+    for label, url in [('ZEN official code','https://github.com/CyFI-Lab-Public/ZEN'),
+                       ('NoiFi official code','https://github.com/shahriar0651/NoiFi'),
+                       ('RoboFiSense recordings','https://github.com/SiamiLab/RoboFiSense'),
+                       ('ZEN supplied memory dump','https://drive.google.com/file/d/1nsTN716aGoT7AU32HmuFQjCYYXmakjHR/view')]:
+        p(f'{label}: <link href="{url}" color="{TEAL}">{url}</link>','SmallNote')
+    p('Paper methods checked against the provided Achieving Zen and Adversarial Noise PDFs. Source commits are recorded in reports/upstream-commits.txt and results/noifi-basic/config.json.', 'SmallNote')
+    def footer(canvas, document):
+        canvas.setStrokeColor(colors.HexColor('#DBE3E7')); canvas.line(44,40,551,40)
+        canvas.setFont('Helvetica',8); canvas.setFillColor(colors.HexColor('#536776'))
+        canvas.drawString(44,27,'ZEN + NoiFi | Reduced experiments and explicit limitations')
+        canvas.drawRightString(551,27,str(document.page))
+    SimpleDocTemplate(str(PDF), pagesize=(595.28,841.89), leftMargin=44, rightMargin=44,
+                      topMargin=38, bottomMargin=52, title='ZEN and NoiFi - Basic Experiments',
+                      author='Khaled Hasan Irfan').build(story, onFirstPage=footer, onLaterPages=footer)
+    # Remove automatically generated creation/modification metadata too.
+    reader=PdfReader(PDF); writer=PdfWriter()
+    writer.append_pages_from_reader(reader)
+    writer.add_metadata({'/Title':'ZEN and NoiFi - Basic Experiments','/Author':'Khaled Hasan Irfan'})
+    with PDF.open('wb') as stream:
+        writer.write(stream)
+    notes = f'''# Slide talking points
 
-    # Generate HTML
-    html = generate_html_report(root)
+1. **Problem:** ZEN studies model recovery/attribution; NoiFi studies adversarial CSI detection. Their metrics serve different tasks.
+2. **Implemented:** Installed Python 3.10 and ran compact NoiFi NSM/NRM/NDM modules on {noifi['recordings']} real RoboFiSense recordings. Clean test accuracy: {noifi['clean_accuracy']:.1%}.
+3. **Compared:** Reconstruction MSE vs NoiFi MED under FGSM and PGD, with a separate calibration split. Use figures/noifi_comparison.png and results/noifi-basic/comparison.csv.
+4. **Extended NoiFi:** N=1,3,5,10,20 with three permutation seeds. Compare detection quality, CPU batch timing and score variability in figures/noifi_n_study.png.
+5. **Executed ZEN stage:** Upstream attribution on supplied recovered CMRs identified {zen['correct']}/{zen['queries']} base families. Report incomplete upstream artifact coverage.
+6. **Extended ZEN:** Used top-two attribution margin to expose ambiguous cases. Smallest margin: {closest['query']} ({float(closest['margin']):.4f}).
+7. **Demonstrated patching:** On 64 controlled local inputs, output error changed from {patch['before_max_absolute_error']:.6f} to {patch['after_max_absolute_error']:.1f} after restoring custom forward bytecode. This is a mechanism demo.
+8. **Limitations:** Compact 64x64 architecture, one model-training seed, digital white-box attacks and mixed-location recording split. Full ZEN RAM recovery and official YOLO patch inference were not run.
 
-    # Save HTML report
-    html_path = root / "reports" / "experiment_report.html"
-    html_path.write_text(html)
-    print(f"✅ HTML report saved: {html_path}")
+## Measured comparison to say aloud
 
-    # Try to convert to PDF using available tools
-    pdf_path = root / "reports" / "experiment_report.pdf"
+- Reconstruction MSE versus NoiFi MED (N=5): FGSM AUROC {fg_mse['auroc_mean']:.3f} versus {fg_med['auroc_mean']:.3f}; PGD {pg_mse['auroc_mean']:.3f} versus {pg_med['auroc_mean']:.3f}. MED does not improve both attacks in this reduced run.
+- N=1 to N=20 barely changes AUROC, reduces score variability, and raises CPU batch time from about {timing_low:.2f} to {timing_high:.2f} ms/sample.
+- ZEN MR-only attribution identifies {zen['mr_only_correct']}/13 families, versus {zen['correct']}/13 for combined MR+PR. The missing artifact coverage limits the claim.
 
-    # Method 1: Try weasyprint
-    try:
-        from weasyprint import HTML as WeasyprintHTML
-        WeasyprintHTML(string=html).write_pdf(str(pdf_path))
-        print(f"✅ PDF report saved: {pdf_path}")
-        return
-    except ImportError:
-        pass
+## Evidence
 
-    # Method 2: Try pdfkit (wkhtmltopdf)
-    try:
-        import pdfkit
-        pdfkit.from_string(html, str(pdf_path))
-        print(f"✅ PDF report saved: {pdf_path}")
-        return
-    except (ImportError, OSError):
-        pass
-
-    # Method 3: Use macOS built-in cupsfilter or textutil
-    import subprocess
-    try:
-        subprocess.run(
-            [
-                "/usr/sbin/cupsfilter",
-                "-o", "media=A4",
-                str(html_path),
-            ],
-            stdout=open(str(pdf_path), "wb"),
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-        print(f"✅ PDF report saved: {pdf_path}")
-        return
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    # Method 4: Use Chrome/Chromium headless
-    for browser in [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "google-chrome",
-        "chromium",
-    ]:
-        try:
-            subprocess.run(
-                [
-                    browser,
-                    "--headless",
-                    "--disable-gpu",
-                    f"--print-to-pdf={pdf_path}",
-                    str(html_path),
-                ],
-                check=True,
-                capture_output=True,
-            )
-            print(f"✅ PDF report saved: {pdf_path}")
-            return
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-
-    print(f"⚠️  Could not auto-convert to PDF.")
-    print(f"   HTML report is ready at: {html_path}")
-    print(f"   Open it in a browser and use Print → Save as PDF")
-    print(f"   Or install: pip install weasyprint")
+- Per-recording hashes and partitions: results/noifi-basic/recordings.csv
+- Configuration and source commit: results/noifi-basic/config.json
+- Raw scores and thresholds: results/noifi-basic/scores.csv and detection_metrics.csv
+- ZEN candidates and coverage: results/zen-attribution/similarity.csv and artifact_coverage.csv
+- All figures are generated by scripts/generate_report.py; editable SVGs accompany PNGs.
+'''
+    (OUT/'slide_notes.md').write_text(notes)
+    print(f'Created {PDF} and {FIG}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

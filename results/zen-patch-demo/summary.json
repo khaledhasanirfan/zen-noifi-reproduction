@@ -1,0 +1,13 @@
+{
+  "status": "completed",
+  "scope": "Controlled local bytecode patch demo",
+  "input_count": 64,
+  "before_max_absolute_error": 0.613492488861084,
+  "after_max_absolute_error": 0.0,
+  "before_allclose": false,
+  "after_allclose": true,
+  "limitations": [
+    "Locally captured function bytecode; no memory dump or YOLO model used.",
+    "Agreement covers only these 64 inputs."
+  ]
+}

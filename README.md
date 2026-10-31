@@ -1,121 +1,38 @@
-# ZEN & NoiFi — Reproduction and Extension
+# ZEN + NoiFi: basic experiments
 
-## Purpose
+Small, runnable implementations and measured comparisons on an M5 Mac.
 
-This repository reproduces key experiments from two security/ML papers and adds
-small, focused extensions. It is structured for clarity and academic
-credibility.
+- **NoiFi:** real RoboFiSense CSI -> compact CNN/DAE -> FGSM/PGD -> residual randomization -> MED detection. Compare with reconstruction MSE.
+- **Extension:** N = 1, 3, 5, 10, 20 versus AUROC, score stability and CPU latency.
+- **ZEN:** run upstream attribution on supplied recovered artifacts; compare top-two candidate margins. A separate local bytecode demo checks output agreement after patching.
+- **Scope:** reduced experiments. Full ZEN Linux dump recovery and official YOLO patch inference are not run. The papers solve different problems, so their metrics are not ranked against each other.
 
-| Paper | Domain | Core Idea |
-|-------|--------|-----------|
-| **ZEN** (CyFI Lab) | Memory forensics + DNN | Recover custom neural-network layers from a Linux memory dump, attribute the base model, and patch the model so it runs again. |
-| **NoiFi** (Shahriar et al.) | WiFi sensing security | Detect adversarial attacks on WiFi CSI classifiers using randomized-smoothing–based noise-feature analysis. |
-
-## Repository Layout
-
-```
-.
-├── third_party/
-│   ├── ZEN/              ← official ZEN repo (git submodule)
-│   └── NoiFi/            ← official NoiFi repo (git submodule)
-├── scripts/              ← our reproduction & extension scripts
-├── environments/         ← pip/conda requirements (Mac-adapted)
-├── reports/              ← upstream commit hashes, findings, PDFs
-├── results/              ← experiment outputs (small CSVs, plots)
-├── logs/                 ← execution logs
-└── data/                 ← datasets (gitignored — download locally)
-```
-
-## Upstream Attribution
-
-| Project | Authors | Repository | License |
-|---------|---------|------------|---------|
-| ZEN | CyFI Lab, Georgia Tech | [CyFI-Lab-Public/ZEN](https://github.com/CyFI-Lab-Public/ZEN) | See upstream |
-| NoiFi | Shahriar et al. | [shahriar0651/NoiFi](https://github.com/shahriar0651/NoiFi) | See upstream |
-
-Pinned upstream commits are recorded in [`reports/upstream-commits.txt`](reports/upstream-commits.txt).
-
-## Hardware & Environment
-
-| Spec | Value |
-|------|-------|
-| Machine | MacBook Air (M5, arm64) |
-| RAM | 16 GB |
-| macOS | 26.6.2 |
-| Python | 3.9.6 (system), 3.10.x (venv for NoiFi) |
-| Git | 2.54.0 |
-
-> **ZEN** requires a compatible Linux x86-64 environment for the full forensic
-> pipeline. The Mac is used for NoiFi and for the ZEN output-consistency
-> checker.
-
-## Experiment Status
-
-| # | Experiment | Status | Evidence |
-|---|-----------|--------|----------|
-| 1 | NoiFi environment setup | ⬜ Pending | |
-| 2 | NoiFi smoke pipeline (2 epochs) | ⬜ Pending | |
-| 3 | NoiFi baseline reproduction | ⬜ Pending | |
-| 4 | NoiFi N-vs-stability extension | ⬜ Pending | |
-| 5 | ZEN environment setup (Linux) | ⬜ Pending | |
-| 6 | ZEN supplied-dump recovery | ⬜ Pending | |
-| 7 | ZEN patched inference | ⬜ Pending | |
-| 8 | ZEN output consistency checker | ⬜ Pending | |
-
-## Quick Start
-
-### Clone with submodules
+## Run
 
 ```bash
-git clone --recurse-submodules \
-  https://github.com/khaledhasanirfan/zen-noifi-reproduction.git
+git submodule update --init --recursive
+bash scripts/setup_mac.sh
+bash scripts/run_all.sh
 ```
 
-### NoiFi (Mac)
+Python 3.10 installs through Homebrew; dependencies stay in `.venv-noifi`.
+The downloader fetches only CSI recordings (3.26 GB) and verifies Git blob hashes.
+For a quick connectivity check: `bash scripts/run_noifi_smoke.sh` after downloading.
+To repeat the N-study with the same checkpoints: `bash scripts/run_noifi_n_study.sh`.
 
-```bash
-# Create venv
-python3.10 -m venv .venv-noifi
-source .venv-noifi/bin/activate
-pip install -r environments/noifi-mac-initial.txt
+## Results
 
-# Download dataset
-git clone https://github.com/SiamiLab/RoboFiSense.git data/RoboFiSense
+See [measured status](reports/status.md), [PDF](output/pdf/experiment_report.pdf),
+[slide notes](output/slide_notes.md), [figures](output/figures), and [raw CSVs](results).
+NoiFi uses separate train, validation, calibration and test recordings. This compact
+64x64 model is not the full paper architecture. ZEN artifact coverage is reported explicitly.
 
-# Smoke test
-bash scripts/run_noifi_smoke.sh
-```
+## Sources / downloads
 
-### ZEN (Linux)
+- [ZEN code + official Linux instructions](https://github.com/CyFI-Lab-Public/ZEN)
+- [ZEN supplied memory dump](https://drive.google.com/file/d/1nsTN716aGoT7AU32HmuFQjCYYXmakjHR/view)
+- [NoiFi code](https://github.com/shahriar0651/NoiFi)
+- [RoboFiSense dataset](https://github.com/SiamiLab/RoboFiSense)
 
-```bash
-# On a Linux x86-64 machine
-conda env create -f third_party/ZEN/Environments/py_38.yml
-conda activate yolov5_py_38
-
-# Run supplied-dump demo
-bash scripts/run_zen_demo.sh
-```
-
-## Extensions
-
-### NoiFi: Randomization Count (N) vs Detection Stability
-
-Tests how the number of randomized references affects detection AUROC,
-recall, and latency. See [`scripts/run_noifi_n_study.sh`](scripts/run_noifi_n_study.sh).
-
-### ZEN: Output Consistency Checker
-
-Numerically compares original model outputs against ZEN-recovered model
-outputs. See [`scripts/compare_outputs.py`](scripts/compare_outputs.py).
-
-## Limitations
-
-- NoiFi runs on CPU (no CUDA on Mac); training is slower but numerically equivalent.
-- ZEN full pipeline requires Linux x86-64 with matching kernel symbols.
-- Results here are from our reproduction runs, not copied from the papers.
-
-## License
-
-Our scripts are MIT-licensed. Upstream code retains its original license.
-See each submodule for details.
+Upstream commits: `reports/upstream-commits.txt`. Source recordings, checkpoints and
+logs are excluded from Git. Our scripts: MIT; upstream code retains its own license.
